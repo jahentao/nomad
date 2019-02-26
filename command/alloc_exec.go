@@ -188,7 +188,7 @@ func (l *AllocExecCommand) Run(args []string) int {
 
 func (l *AllocExecCommand) execImpl(client *api.Client, alloc *api.Allocation, task string, tty bool,
 	command []string, outWriter, errWriter io.Writer, inReader io.Reader) (int, error) {
-	cancel := make(chan struct{})
+	cancel := make(chan struct{}, 1)
 	frames, errCh := client.Allocations().Exec(alloc, task, tty, command, inReader, cancel, nil)
 	select {
 	case err := <-errCh:
@@ -203,6 +203,9 @@ func (l *AllocExecCommand) execImpl(client *api.Client, alloc *api.Allocation, t
 		select {
 		case err := <-errCh:
 			return -1, err
+		case <-signalCh:
+			cancel <- struct{}{}
+			return -1, errors.New("cancelled")
 		case frame, ok := <-frames:
 			if !ok {
 				return -1, nil

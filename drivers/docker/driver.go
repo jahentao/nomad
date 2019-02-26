@@ -1215,6 +1215,7 @@ func (d *Driver) ExecTaskStreaming(ctx context.Context, taskID string, execOpts 
 	startOpts := docker.StartExecOptions{
 		Detach:       false,
 		Tty:          execOpts.Tty,
+		RawTerminal:  execOpts.Tty,
 		InputStream:  stdin,
 		OutputStream: stdout,
 		ErrorStream:  stderr,

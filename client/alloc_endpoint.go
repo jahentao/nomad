@@ -177,6 +177,15 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 	outReader, outWriter := io.Pipe()
 	errReader, errWriter := io.Pipe()
 
+	ctx, ctxCancel := context.WithCancel(context.Background())
+
+	cancel := func() {
+		ctxCancel()
+		outReader.Close()
+		errReader.Close()
+		inWriter.Close()
+	}
+
 	// Create a goroutine to detect the remote side closing
 
 	// process input
@@ -186,6 +195,7 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 			err := decoder.Decode(&readFrame)
 			if err == io.EOF {
 				a.c.logger.Warn("connection closed")
+				cancel()
 				break
 			}
 			if err != nil {
@@ -213,55 +223,41 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 		encoder.Reset(conn)
 	}
 
-	sendOutput := func(data []byte, source string) {
-		sendFrame(&sframer.StreamFrame{
-			Data: data,
-			File: source,
-		})
-	}
-
-	// process output
-	go func() {
+	forwardOutput := func(reader io.Reader, source string) {
 		bytes := make([]byte, 1024)
 
 		for {
 			n, err := outReader.Read(bytes)
-			if err == io.EOF {
+			if err == io.EOF || err == io.ErrClosedPipe {
 				return
 			} else if err != nil {
-				a.c.logger.Warn("received error reading output")
+				a.c.logger.Warn("received error reading output", "source", source, "error", err)
 			}
 
-			sendOutput(bytes[:n], "stdout")
+			sendFrame(&sframer.StreamFrame{
+				Data: bytes[:n],
+				File: source,
+			})
 		}
-	}()
-	// process err
-	go func() {
-		bytes := make([]byte, 1024)
+	}
 
-		for {
-			n, err := errReader.Read(bytes)
-			if err == io.EOF {
-				return
-			} else if err != nil {
-				a.c.logger.Warn("received error reading output")
-			}
-
-			sendOutput(bytes[:n], "stderr")
-		}
-	}()
+	go forwardOutput(outReader, "stdout")
+	go forwardOutput(errReader, "stderr")
 
 	h := ar.GetTaskExecHandler(req.Task)
-	r, err := h(context.TODO(), drivers.ExecOptions{
+	r, err := h(ctx, drivers.ExecOptions{
 		Command: req.Cmd,
 		Tty:     req.Tty,
 	}, inReader, outWriter, errWriter, nil)
+
+	a.c.logger.Debug("taskExec Handler finished", "result", r, "error", err)
 
 	if err != nil {
 		sendFrame(&sframer.StreamFrame{
 			Data:      []byte(err.Error()),
 			FileEvent: "exit-error",
 		})
+		return
 	}
 
 	sendFrame(&sframer.StreamFrame{
@@ -270,7 +266,6 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 	})
 
 	a.c.logger.Info("exec exited", "result", r, "err", err)
-	conn.Close()
 
 	return
 }
