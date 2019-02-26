@@ -1,10 +1,12 @@
 package command
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -34,6 +36,9 @@ Logs Specific Options:
 
   -job <job-id>
     Use a random allocation from the specified job ID.
+
+  -T
+    Disables pseudo-terminal
   `
 	return strings.TrimSpace(helpText)
 }
@@ -47,7 +52,7 @@ func (c *AllocExecCommand) AutocompleteFlags() complete.Flags {
 		complete.Flags{
 			"--task": complete.PredictAnything,
 			"-job":   complete.PredictAnything,
-			"--tty":  complete.PredictNothing,
+			"-T":     complete.PredictNothing,
 		})
 }
 
@@ -66,16 +71,16 @@ func (l *AllocExecCommand) AutocompleteArgs() complete.Predictor {
 	})
 }
 
-func (l *AllocExecCommand) Name() string { return "alloc logs" }
+func (l *AllocExecCommand) Name() string { return "alloc exec" }
 
 func (l *AllocExecCommand) Run(args []string) int {
-	var job, tty bool
+	var job, notty bool
 	var task string
 
 	flags := l.Meta.FlagSet(l.Name(), FlagSetClient)
 	flags.Usage = func() { l.Ui.Output(l.Help()) }
 	flags.BoolVar(&job, "job", false, "")
-	flags.BoolVar(&tty, "tty", true, "")
+	flags.BoolVar(&notty, "T", false, "")
 	flags.StringVar(&task, "task", "", "")
 
 	if err := flags.Parse(args); err != nil {
@@ -98,7 +103,7 @@ func (l *AllocExecCommand) Run(args []string) int {
 		return 1
 	}
 
-	command := args[2:]
+	command := args[1:]
 
 	client, err := l.Meta.Client()
 	if err != nil {
@@ -172,22 +177,22 @@ func (l *AllocExecCommand) Run(args []string) int {
 		}
 	}
 
-	err = l.execImpl(client, alloc, task, tty, command, os.Stdout, os.Stderr, os.Stdin)
+	code, err := l.execImpl(client, alloc, task, !notty, command, os.Stdout, os.Stderr, os.Stdin)
 	if err != nil {
 		l.Ui.Error(fmt.Sprintf("failed to exec into task: %v", err))
 		return 1
 	}
 
-	return 0
+	return code
 }
 
 func (l *AllocExecCommand) execImpl(client *api.Client, alloc *api.Allocation, task string, tty bool,
-	command []string, outWriter, errWriter io.Writer, inReader io.Reader) error {
+	command []string, outWriter, errWriter io.Writer, inReader io.Reader) (int, error) {
 	cancel := make(chan struct{})
 	frames, errCh := client.Allocations().Exec(alloc, task, tty, command, inReader, cancel, nil)
 	select {
 	case err := <-errCh:
-		return err
+		return -1, err
 	default:
 	}
 
@@ -197,10 +202,22 @@ func (l *AllocExecCommand) execImpl(client *api.Client, alloc *api.Allocation, t
 	for {
 		select {
 		case err := <-errCh:
-			return err
+			return -1, err
 		case frame, ok := <-frames:
 			if !ok {
-				return nil
+				return -1, nil
+			}
+
+			switch frame.FileEvent {
+			case "exit-error":
+				return -1, errors.New(string(frame.Data))
+			case "exit-code":
+				code, err := strconv.Atoi(string(frame.Data))
+				if err != nil {
+					return -1, fmt.Errorf("received unexpected exit code: %v", string(frame.Data))
+				}
+
+				return code, nil
 			}
 
 			w := outWriter

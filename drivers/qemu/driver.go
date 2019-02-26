@@ -574,9 +574,8 @@ func (d *Driver) ExecTask(taskID string, cmdArgs []string, timeout time.Duration
 	return nil, fmt.Errorf("Qemu driver can't execute commands")
 }
 
-func (d *Driver) ExecTaskStreaming(ctx context.Context, taskID string, cmd []string,
-	stdin io.Reader, stdout, stderr io.Writer,
-	tty bool, resizeCh <-chan drivers.TerminalSize) (*drivers.ExitResult, error) {
+func (d *Driver) ExecTaskStreaming(ctx context.Context, taskID string, execOpts drivers.ExecOptions,
+	stdin io.Reader, stdout, stderr io.Writer, resizeCh <-chan drivers.TerminalSize) (*drivers.ExitResult, error) {
 	return nil, errors.New("not supported")
 }
 

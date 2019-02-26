@@ -389,9 +389,8 @@ func (d *driverPluginClient) ExecTask(taskID string, cmd []string, timeout time.
 	return result, nil
 }
 
-func (d *driverPluginClient) ExecTaskStreaming(ctx context.Context, taskID string, cmd []string,
-	stdin io.Reader, stdout, stderr io.Writer,
-	tty bool, resizeCh <-chan TerminalSize) (*ExitResult, error) {
+func (d *driverPluginClient) ExecTaskStreaming(ctx context.Context, taskID string, execOptions ExecOptions,
+	stdin io.Reader, stdout, stderr io.Writer, resizeCh <-chan TerminalSize) (*ExitResult, error) {
 
 	stream, err := d.client.ExecTaskStreaming(ctx)
 	if err != nil {
@@ -401,7 +400,8 @@ func (d *driverPluginClient) ExecTaskStreaming(ctx context.Context, taskID strin
 	err = stream.Send(&proto.ExecTaskStreamingRequest{
 		Setup: &proto.ExecTaskStreamingRequest_Setup{
 			TaskId:  taskID,
-			Command: cmd,
+			Command: execOptions.Command,
+			Tty:     execOptions.Tty,
 		},
 	})
 	if err != nil {

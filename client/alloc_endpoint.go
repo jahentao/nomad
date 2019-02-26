@@ -2,9 +2,11 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	metrics "github.com/armon/go-metrics"
@@ -14,6 +16,7 @@ import (
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/nomad/structs"
 	nstructs "github.com/hashicorp/nomad/nomad/structs"
+	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/ugorji/go/codec"
 )
 
@@ -175,7 +178,8 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 	errReader, errWriter := io.Pipe()
 
 	// Create a goroutine to detect the remote side closing
-	// TODO: Read input
+
+	// process input
 	go func() {
 		for {
 			var readFrame sframer.StreamFrame
@@ -193,27 +197,79 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 		}
 	}()
 
-	ar.GetTaskEventHandler(req.Task)
+	sendFrame := func(frame *sframer.StreamFrame) {
+		buf := new(bytes.Buffer)
+		frameCodec := codec.NewEncoder(buf, structs.JsonHandle)
+		if err := frameCodec.Encode(frame); err != nil {
+			panic(err)
+		}
+		frameCodec.Reset(buf)
 
-	frame := &sframer.StreamFrame{}
-	frame.Data = []byte("Yay I am here\n")
-	frame.File = "stdout"
+		var resp cstructs.StreamErrWrapper
+		resp.Payload = buf.Bytes()
+		buf.Reset()
 
-	buf := new(bytes.Buffer)
-	frameCodec := codec.NewEncoder(buf, structs.JsonHandle)
-	if err := frameCodec.Encode(frame); err != nil {
-		panic(err)
+		encoder.Encode(resp)
+		encoder.Reset(conn)
 	}
-	frameCodec.Reset(buf)
 
-	var resp cstructs.StreamErrWrapper
-	resp.Payload = buf.Bytes()
-	buf.Reset()
+	sendOutput := func(data []byte, source string) {
+		sendFrame(&sframer.StreamFrame{
+			Data: data,
+			File: source,
+		})
+	}
 
-	encoder.Encode(resp)
-	encoder.Reset(conn)
+	// process output
+	go func() {
+		bytes := make([]byte, 1024)
 
-	time.Sleep(5 * time.Second)
+		for {
+			n, err := outReader.Read(bytes)
+			if err == io.EOF {
+				return
+			} else if err != nil {
+				a.c.logger.Warn("received error reading output")
+			}
+
+			sendOutput(bytes[:n], "stdout")
+		}
+	}()
+	// process err
+	go func() {
+		bytes := make([]byte, 1024)
+
+		for {
+			n, err := errReader.Read(bytes)
+			if err == io.EOF {
+				return
+			} else if err != nil {
+				a.c.logger.Warn("received error reading output")
+			}
+
+			sendOutput(bytes[:n], "stderr")
+		}
+	}()
+
+	h := ar.GetTaskExecHandler(req.Task)
+	r, err := h(context.TODO(), drivers.ExecOptions{
+		Command: req.Cmd,
+		Tty:     req.Tty,
+	}, inReader, outWriter, errWriter, nil)
+
+	if err != nil {
+		sendFrame(&sframer.StreamFrame{
+			Data:      []byte(err.Error()),
+			FileEvent: "exit-error",
+		})
+	}
+
+	sendFrame(&sframer.StreamFrame{
+		Data:      []byte(strconv.Itoa(r.ExitCode)),
+		FileEvent: "exit-code",
+	})
+
+	a.c.logger.Info("exec exited", "result", r, "err", err)
 	conn.Close()
 
 	return

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -230,10 +231,16 @@ func (s *HTTPServer) allocExec(allocID string, resp http.ResponseWriter, req *ht
 
 	// Build the request and parse the ACL token
 	task := req.URL.Query().Get("task")
+	cmdJsonStr := req.URL.Query().Get("command")
+	var command []string
+	json.Unmarshal([]byte(cmdJsonStr), &command)
+
+	tty := req.URL.Query().Get("tty")
 	args := cstructs.AllocExecRequest{
 		AllocID: allocID,
 		Task:    task,
-		Cmd:     []string{"echo", "hello there"},
+		Cmd:     command,
+		Tty:     tty == "true",
 	}
 	s.parse(resp, req, &args.QueryOptions.Region, &args.QueryOptions)
 
