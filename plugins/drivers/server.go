@@ -339,8 +339,8 @@ func (b *driverPluginServer) ExecTaskStreaming(server proto.Driver_ExecTaskStrea
 		switch {
 		case msg.Resize != nil:
 			resize <- TerminalSize{
-				Height: msg.Resize.Height,
-				Width:  msg.Resize.Width,
+				Height: int(msg.Resize.Height),
+				Width:  int(msg.Resize.Width),
 			}
 		case msg.Input != nil:
 			inWriter.Write(msg.Input.Value)

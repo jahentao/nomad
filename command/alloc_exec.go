@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/docker/docker/pkg/term"
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/api/contexts"
 	"github.com/posener/complete"
@@ -186,10 +188,88 @@ func (l *AllocExecCommand) Run(args []string) int {
 	return code
 }
 
+func setRawTerminal(stream interface{}) (cleanup func(), err error) {
+	fd, isTerminal := term.GetFdInfo(stream)
+	if !isTerminal {
+		return nil, errors.New("not a terminal")
+	}
+
+	state, err := term.SetRawTerminal(fd)
+	if err != nil {
+		return nil, err
+	}
+
+	return func() { term.RestoreTerminal(fd, state) }, nil
+}
+
+func watchTerminalSize(out io.Writer, resize chan<- api.TerminalSize) (func(), error) {
+	fd, isTerminal := term.GetFdInfo(out)
+	if !isTerminal {
+		return nil, errors.New("not a terminal")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGWINCH)
+
+	sendTerminalSize := func() {
+		s, err := term.GetWinsize(fd)
+		if err != nil {
+			return
+		}
+
+		resize <- api.TerminalSize{
+			Height: int32(s.Height),
+			Width:  int32(s.Width),
+		}
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-signalCh:
+				sendTerminalSize()
+			}
+		}
+	}()
+
+	go func() {
+		// send initial size
+		sendTerminalSize()
+	}()
+
+	return cancel, nil
+}
+
 func (l *AllocExecCommand) execImpl(client *api.Client, alloc *api.Allocation, task string, tty bool,
 	command []string, outWriter, errWriter io.Writer, inReader io.Reader) (int, error) {
+
+	sizeCh := make(chan api.TerminalSize, 1)
+
+	if tty {
+		inCleanup, err := setRawTerminal(inReader)
+		if err != nil {
+			return -1, err
+		}
+		defer inCleanup()
+
+		outCleanup, err := setRawTerminal(outWriter)
+		if err != nil {
+			return -1, err
+		}
+		defer outCleanup()
+
+		sizeCleanup, err := watchTerminalSize(outWriter, sizeCh)
+		if err != nil {
+			return -1, err
+		}
+		defer sizeCleanup()
+	}
+
 	cancel := make(chan struct{}, 1)
-	frames, errCh := client.Allocations().Exec(alloc, task, tty, command, inReader, cancel, nil)
+	frames, errCh := client.Allocations().Exec(alloc, task, tty, command, inReader, cancel, sizeCh, nil)
 	select {
 	case err := <-errCh:
 		return -1, err

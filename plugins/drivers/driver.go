@@ -140,8 +140,8 @@ type Capabilities struct {
 }
 
 type TerminalSize struct {
-	Height int32
-	Width  int32
+	Height int
+	Width  int
 }
 
 type TaskConfig struct {

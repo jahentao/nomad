@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -173,6 +174,8 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 		return
 	}
 
+	resizeCh := make(chan drivers.TerminalSize, 1)
+
 	inReader, inWriter := io.Pipe()
 	outReader, outWriter := io.Pipe()
 	errReader, errWriter := io.Pipe()
@@ -184,6 +187,7 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 		outReader.Close()
 		errReader.Close()
 		inWriter.Close()
+		close(resizeCh)
 	}
 
 	// Create a goroutine to detect the remote side closing
@@ -191,8 +195,8 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 	// process input
 	go func() {
 		for {
-			var readFrame sframer.StreamFrame
-			err := decoder.Decode(&readFrame)
+			frame := sframer.StreamFrame{}
+			err := decoder.Decode(&frame)
 			if err == io.EOF {
 				a.c.logger.Warn("connection closed")
 				cancel()
@@ -202,8 +206,22 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 				a.c.logger.Warn("received unexpected error", "error", err)
 				break
 			}
-			a.c.logger.Warn("received input", "input", fmt.Sprintf("%#v", readFrame), "error", err)
-			inWriter.Write(readFrame.Data)
+			a.c.logger.Warn("received input", "input", fmt.Sprintf("%#v", frame), "error", err)
+			switch {
+			case frame.File == "stdin":
+				inWriter.Write(frame.Data)
+			case frame.FileEvent == "resize":
+				t := drivers.TerminalSize{}
+				err := json.Unmarshal(frame.Data, &t)
+				if err != nil {
+					a.c.logger.Warn("failed to deserialize termina size", "error", err, "value", string(frame.Data))
+					continue
+				}
+				a.c.logger.Warn("resized terminal", "value", string(frame.Data))
+
+				resizeCh <- t
+
+			}
 		}
 	}()
 
@@ -248,7 +266,7 @@ func (a *Allocations) Exec(conn io.ReadWriteCloser) {
 	r, err := h(ctx, drivers.ExecOptions{
 		Command: req.Cmd,
 		Tty:     req.Tty,
-	}, inReader, outWriter, errWriter, nil)
+	}, inReader, outWriter, errWriter, resizeCh)
 
 	a.c.logger.Debug("taskExec Handler finished", "result", r, "error", err)
 

@@ -3,6 +3,7 @@ package drivers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -392,6 +393,7 @@ func (d *driverPluginClient) ExecTask(taskID string, cmd []string, timeout time.
 func (d *driverPluginClient) ExecTaskStreaming(ctx context.Context, taskID string, execOptions ExecOptions,
 	stdin io.Reader, stdout, stderr io.Writer, resizeCh <-chan TerminalSize) (*ExitResult, error) {
 
+	d.logger.Info("exec streaming called", "resizeCh", resizeCh)
 	stream, err := d.client.ExecTaskStreaming(ctx)
 	if err != nil {
 		return nil, grpcutils.HandleGrpcErr(err, d.doneCtx)
@@ -411,8 +413,11 @@ func (d *driverPluginClient) ExecTaskStreaming(ctx context.Context, taskID strin
 	go func() {
 		select {
 		case <-ctx.Done():
+			d.logger.Info("done in loop of terminal")
 			return
 		case newSize := <-resizeCh:
+			fmt.Println("received new size", "size", newSize)
+			d.logger.Info("received new size", "size", newSize)
 			stream.Send(&proto.ExecTaskStreamingRequest{
 				Resize: &proto.ExecTaskStreamingRequest_TerminalSize{
 					Height: int32(newSize.Height),

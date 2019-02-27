@@ -66,7 +66,9 @@ func (a *Allocations) Info(allocID string, q *QueryOptions) (*Allocation, *Query
 }
 
 func (a *Allocations) Exec(alloc *Allocation, task string, tty bool, command []string,
-	input io.Reader, cancel <-chan struct{}, q *QueryOptions) (<-chan *StreamFrame, <-chan error) {
+	input io.Reader, cancel <-chan struct{},
+	terminalSizeCh <-chan TerminalSize,
+	q *QueryOptions) (<-chan *StreamFrame, <-chan error) {
 	errCh := make(chan error, 1)
 
 	nodeClient, err := a.client.GetNodeClientWithTimeout(alloc.NodeID, ClientConnTimeout, q)
@@ -114,6 +116,23 @@ func (a *Allocations) Exec(alloc *Allocation, task string, tty bool, command []s
 	}
 
 	go func() {
+		for s := range terminalSizeCh {
+			sj, err := json.Marshal(s)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			frame := StreamFrame{
+				Data:      sj,
+				FileEvent: "resize",
+				File:      "resize",
+			}
+
+			enc.Encode(frame)
+		}
+	}()
+
+	go func() {
 		bytes := make([]byte, 1024)
 
 		for {
@@ -123,9 +142,10 @@ func (a *Allocations) Exec(alloc *Allocation, task string, tty bool, command []s
 				return
 			}
 
-			frame := StreamFrame{}
-			frame.Data = bytes[:n]
-			frame.File = "/dev/stdin"
+			frame := StreamFrame{
+				Data: bytes[:n],
+				File: "stdin",
+			}
 
 			enc.Encode(frame)
 		}
@@ -189,6 +209,11 @@ func (a *Allocations) GC(alloc *Allocation, q *QueryOptions) error {
 	var resp struct{}
 	_, err = nodeClient.query("/v1/client/allocation/"+alloc.ID+"/gc", &resp, nil)
 	return err
+}
+
+type TerminalSize struct {
+	Height int32
+	Width  int32
 }
 
 // Allocation is used for serialization of allocations.

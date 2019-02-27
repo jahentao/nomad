@@ -1189,6 +1189,8 @@ func (d *Driver) ExecTask(taskID string, cmd []string, timeout time.Duration) (*
 func (d *Driver) ExecTaskStreaming(ctx context.Context, taskID string, execOpts drivers.ExecOptions,
 	stdin io.Reader, stdout, stderr io.Writer, resizeCh <-chan drivers.TerminalSize) (*drivers.ExitResult, error) {
 
+	d.logger.Info("exectaskstreaming is called")
+
 	h, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
@@ -1211,6 +1213,19 @@ func (d *Driver) ExecTaskStreaming(ctx context.Context, taskID string, execOpts 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create exec object: %v", err)
 	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				d.logger.Info("delect resize ctx is done")
+				return
+			case s := <-resizeCh:
+				d.logger.Info("delect resize", "size", s)
+				client.ResizeExecTTY(exec.ID, int(s.Height), int(s.Width))
+			}
+		}
+	}()
 
 	startOpts := docker.StartExecOptions{
 		Detach:       false,
