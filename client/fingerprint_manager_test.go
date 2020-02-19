@@ -32,7 +32,7 @@ func TestFingerprintManager_Run_ResourcesFingerprint(t *testing.T) {
 	require.NotZero(node.Resources.DiskMB)
 }
 
-func TestFimgerprintManager_Run_InWhitelist(t *testing.T) {
+func TestFingerprintManager_Run_InWhitelist(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
